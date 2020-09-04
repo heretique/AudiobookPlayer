@@ -194,6 +194,7 @@ int main(int, char**)
 
     bool   show_demo_window = false;
     bool   show_file_dialog = false;
+    std::string selectedPath = "";
     ImVec4 clear_color      = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
@@ -236,6 +237,8 @@ int main(int, char**)
             // use a format strings too)
             ImGui::Checkbox("Demo Window", &show_demo_window);
             ImGui::Checkbox("File Browser", &show_file_dialog);
+            ImGui::SameLine();
+            ImGui::Text("Selected path: %s", selectedPath.c_str());
             ImGui::SliderFloat("float", &f, 0.0f,
                                1.0f);  // Edit 1 float using a slider from 0.0f to 1.0f
             ImGui::ColorEdit3("clear color",
@@ -260,9 +263,9 @@ int main(int, char**)
 
         if (show_file_dialog)
         {
-            std::string selection;
-            if (ImGui::FileBrowser("Get Folder", selection, show_file_dialog))
+            if (ImGui::FileBrowser("Get Folder", selectedPath, show_file_dialog))
             {
+
             }
         }
 

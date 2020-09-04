@@ -73,7 +73,7 @@ namespace sqlite3pp
     }
   }
 
-  inline database::database(database&& db) : db_(std::move(db.db_)),
+  inline database::database(database&& db) noexcept : db_(std::move(db.db_)),
     borrowing_(std::move(db.borrowing_)),
     bh_(std::move(db.bh_)),
     ch_(std::move(db.ch_)),
@@ -84,7 +84,7 @@ namespace sqlite3pp
     db.db_ = nullptr;
   }
 
-  inline database& database::operator=(database&& db)
+  inline database& database::operator=(database&& db) noexcept
   {
     db_ = std::move(db.db_);
     db.db_ = nullptr;

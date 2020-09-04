@@ -92,8 +92,8 @@ public:
 
     explicit database(char const* dbname = nullptr, int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, const char* vfs = nullptr);
 
-    database(database&& db);
-    database& operator=(database&& db);
+    database(database&& db) noexcept;
+    database& operator=(database&& db) noexcept;
 
     ~database();
 

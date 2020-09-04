@@ -2,6 +2,11 @@
 # Created by https://www.toptal.com/developers/gitignore/api/cmake
 # Edit at https://www.toptal.com/developers/gitignore?templates=cmake
 
+.vs/
+.vc/
+
+out/
+
 ### CMake ###
 CMakeLists.txt.user
 CMakeCache.txt
@@ -14,6 +19,7 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps
+CMakeSettings.json
 
 ### CMake Patch ###
 # External projects
