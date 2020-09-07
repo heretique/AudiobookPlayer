@@ -218,6 +218,7 @@ bool FileBrowser(const std::string& name, std::string& outPath, bool& open, ImGu
         {
         case FileBrowserContext::Result::ESelect:
             outPath = sContext.selectedPath.string();
+            result = true;
             [[fallthrough]];
         case FileBrowserContext::Result::ECancel:
             open = false;

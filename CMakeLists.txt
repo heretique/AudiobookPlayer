@@ -17,7 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(AudiobookPlayer
     imFileBroser.cpp
     main.cpp
-    vlc.cpp)
+    AudiobookPlayer.cpp
+    3rdparty/enkiTS/TaskScheduler.cpp)
 
 find_package(imgui CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
