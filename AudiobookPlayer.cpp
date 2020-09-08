@@ -24,6 +24,11 @@ enum class PlayerState
 };
 
 
+static const std::string kLibraryDb = "library.db";
+static const std::string kInitialized = "Initialized...";
+static const std::string kChooseLibraryLocation = "Choose Library Location";
+static const std::string kCreateBooksTable = "create table if not exists books (key integer unique primary key, author text, name text, series text, duration integer)";
+
 struct BookInfo
 {
 };
@@ -59,11 +64,28 @@ struct Library
 
     ~Library() {
         _taskScheduler->WaitforAllAndShutdown();
+        _libraryDb.disconnect();
     }
 
     bool isEmpty() { return true; }
     bool init() {
         _taskScheduler->Initialize();
+
+        // Initialize database
+        _libraryDb.disconnect();
+        fs::path dbPath = fs::current_path();
+        dbPath.append(kLibraryDb);
+        int result = _libraryDb.connect(dbPath.string().c_str(), SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
+        if (SQLITE_OK != result )
+        {
+            return false;
+        }
+
+        result = _libraryDb.execute(kCreateBooksTable.c_str());
+        if (SQLITE_OK != result)
+        {
+            return false;
+        }
 
         return true;
     }
@@ -124,7 +146,7 @@ struct AudiobookPlayerImpl
             return false;
         }
 
-        _status = "Bla bla bla....";
+        _status = kInitialized;
         return true;
     }
 
@@ -284,7 +306,7 @@ struct AudiobookPlayerImpl
             showDialog = true;
         }
 
-        if (showDialog && ImGui::FileBrowser("Choose Library Location", location, showDialog, ImGuiFileBrowserFlags_SelectDirectory))
+        if (showDialog && ImGui::FileBrowser(kChooseLibraryLocation, location, showDialog, ImGuiFileBrowserFlags_SelectDirectory))
         {
             if (_library.startLibraryDiscovery(location))
             {
