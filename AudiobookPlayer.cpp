@@ -9,8 +9,11 @@
 #include <cassert>
 #include <filesystem>
 #include <iostream>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
+
+// ENUMS
 
 enum class PlayerState
 {
@@ -24,23 +27,46 @@ enum class PlayerState
     Player,
 };
 
+enum class TrackType
+{
+    Unknown,
+    Audio,
+    Video,
+    Text
+};
+
+// LITERALS
+
+// Library db
 static const std::string kLibraryDb             = "library.db";
 static const std::string kInitialized           = "Initialized...";
 static const std::string kChooseLibraryLocation = "Choose Library Location";
 static const std::string kCreateBooksTable =
-    "create table if not exists books (key integer unique primary key, author text, name text, series text, duration integer)";
+    "create table if not exists books (key integer unique primary key, duration integer, author text, name text, series text, description text, path text, thumbnail_path)";
+static const std::string kCreateFilesTable =
+    "create table if not exists files (key integer unique primary key, book_id integer, last_modified integer, track_number integer, path text)";
+static const std::string kCreateBookmarksTable =
+    "create table if not exists bookmarks (key integer unique primary key, book_id integer, name text, file_id, position integer, description text)";
+static const std::string kCreateSettingsTable =
+    "create table if not exists settings (setting text unique primary key, value text)";
+static const std::string kLastBookMarkName = "##last##";
 
-struct BookInfo
-{
-};
+// settings
+static const std::string kSettingLastBookId = "last_book_id";
+static const std::string kPlayingSpeed      = "playing_speed";
 
-struct TrackInfo
-{
-};
+// Extensions
+static const std::unordered_set<std::string> kIgnoreExtensions = {
+    ".nfo", ".txt", ".pdf", ".epub", ".mobi", ".log", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".tga"};
+static const std::unordered_set<std::string> kPlaylistExtensions = {".m3u"};
 
-struct MetaInfo
+// UTILITIES
+
+template <typename E>
+constexpr auto toUnderlyingType(E e)
 {
-};
+    return static_cast<typename std::underlying_type<E>::type>(e);
+}
 
 ImVec2 operator/(const ImVec2& lhs, float s)
 {
@@ -52,11 +78,89 @@ ImVec2 operator-(const ImVec2& lhs, float s)
     return ImVec2(lhs.x - s, lhs.y - s);
 }
 
+const char* ValueOrEmpty(const char* s)
+{
+    return s == nullptr ? "" : s;
+}
+
+TrackType FromVLCTrackType(libvlc_track_type_t type)
+{
+    TrackType trackType = TrackType::Unknown;
+    switch (type)
+    {
+        case libvlc_track_audio:
+            trackType = TrackType::Audio;
+            break;
+        case libvlc_track_video:
+            trackType = TrackType::Video;
+            break;
+        case libvlc_track_text:
+            trackType = TrackType::Text;
+            break;
+    }
+    return trackType;
+}
+
+// STRUCTS & CLASSES
+
+struct Track
+{
+    TrackType type;
+};
+
+struct Meta
+{
+    std::string author;
+    std::string name;
+    std::string rating;
+    std::string artworkUrl;
+    std::string publisher;
+    std::string trackNumber;
+    std::string description;
+};
+
+struct Media
+{
+    uint32_t           id {0};
+    std::string        path;
+    int64_t            duration {0};
+    int64_t            lastModified;
+    uint32_t           trackNumber;
+    Meta               meta;
+    std::vector<Track> tracks;
+    bool               isPlaylist {false};
+
+    bool isEmpty() const
+    {
+        return duration == 0 && tracks.size() == 0;
+    }
+};
+
+struct Bookmark
+{
+};
+
+struct Book
+{
+    uint32_t           id {0};
+    std::string        folder;
+    std::string        author;
+    std::string        name;
+    std::string        series;
+    std::string        description;
+    uint64_t           duration {0};
+    std::string        thumbnailLocation;
+    std::vector<Media> files;
+};
+
 struct Library
 {
     sqlite3pp::database                  _libraryDb;
     std::unique_ptr<enki::TaskScheduler> _taskScheduler;
     std::unique_ptr<enki::TaskSet>       _currentTask;
+    libvlc_instance_t*                   _vlcInstance {nullptr};  // shared VLC instance with the player
+    std::vector<Book>                    _books;
+    std::unique_ptr<Book>                _currentBook;
 
     Library()
         : _taskScheduler(std::make_unique<enki::TaskScheduler>())
@@ -71,10 +175,12 @@ struct Library
 
     bool isEmpty()
     {
-        return true;
+        return _books.empty();
     }
-    bool init()
+
+    bool init(libvlc_instance_t* vlcInstance)
     {
+        _vlcInstance = vlcInstance;
         _taskScheduler->Initialize();
 
         // Initialize database
@@ -92,29 +198,211 @@ struct Library
         {
             return false;
         }
+        result = _libraryDb.execute(kCreateFilesTable.c_str());
+        if (SQLITE_OK != result)
+        {
+            return false;
+        }
+        result = _libraryDb.execute(kCreateBookmarksTable.c_str());
+        if (SQLITE_OK != result)
+        {
+            return false;
+        }
+        result = _libraryDb.execute(kCreateSettingsTable.c_str());
+        if (SQLITE_OK != result)
+        {
+            return false;
+        }
 
         return true;
     }
 
     bool startLibraryDiscovery(const std::string& pathName)
     {
-        _currentTask =
-            std::make_unique<enki::TaskSet>([pathName, this](enki::TaskSetPartition range, uint32_t threadnum) {
-                fs::path path(pathName);
-                if (!fs::exists(path) || !fs::is_directory(path))
-                {
-                    return;
-                }
-                fs::recursive_directory_iterator rdi(path);
+        _currentTask = std::make_unique<enki::TaskSet>([pathName, this](enki::TaskSetPartition range,
+                                                                        uint32_t               threadnum) {
+            fs::path path(pathName);
+            if (!fs::exists(path) || !fs::is_directory(path))
+            {
+                return;
+            }
 
-                for (const auto& entry : rdi)
+            _books.clear();
+            fs::recursive_directory_iterator rdi(path);
+            bool                             wasPreviousDirectory = false;
+            for (const auto& entry : rdi)
+            {
+                std::cout << entry.path() << '\n';
+                if (entry.is_directory())
                 {
-                    std::cout << entry.path() << '\n';
+                    if (wasPreviousDirectory && !_books.empty())
+                    {
+                        _books.pop_back();
+                    }
+                    wasPreviousDirectory = true;
+                    Book newBook;
+                    newBook.name   = entry.path().filename().string();
+                    newBook.folder = entry.path().string();
+                    _books.emplace_back(newBook);
                 }
-            });
+                else if (entry.is_regular_file())
+                {
+                    wasPreviousDirectory = false;
+                    if (kIgnoreExtensions.find(entry.path().extension().string()) != kIgnoreExtensions.end())
+                    {
+                        // skip this file
+                        continue;
+                    }
+
+                    libvlc_media_t* media = libvlc_media_new_path(_vlcInstance, entry.path().string().c_str());
+                    if (!media)
+                    {
+                        // couldn't load media, skip
+                        continue;
+                    }
+
+                    libvlc_media_parse(media);
+
+                    if (!_books.empty())
+                    {
+                        Book& lastBook = _books.back();
+                        Media mediaInfo;
+                        mediaInfo.path = entry.path().string();
+                        if (kPlaylistExtensions.find(entry.path().extension().string()) != kPlaylistExtensions.end())
+                        {
+                            mediaInfo.isPlaylist = true;
+                        }
+                        auto lastModifiedTime = fs::last_write_time(entry.path());
+
+                        mediaInfo.lastModified =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(lastModifiedTime.time_since_epoch())
+                                .count();
+                        readMediaInfo(media, mediaInfo);
+                        readMediaMeta(media, mediaInfo.meta);
+                        lastBook.files.emplace_back(mediaInfo);
+                    }
+
+                    libvlc_media_release(media);
+                }
+            }
+            std::cout << "Found books:\n";
+            for (const auto& book : _books)
+            {
+                writeBookToDb(book);
+                std::cout << book.name << "\n";
+                for (const auto& file : book.files)
+                {
+                    std::cout << "\t"
+                              << "File: " << file.path << "\n";
+                    std::cout << "\t"
+                              << "Author: " << file.meta.author << "\n";
+                    std::cout << "\t"
+                              << "Name: " << file.meta.name << "\n";
+                    std::cout << "\t"
+                              << "Is playlist: " << file.isPlaylist << "\n";
+                    std::cout << "\t"
+                              << "Description: " << file.meta.description << "\n";
+                    std::cout << "\t"
+                              << "Track number: " << file.meta.trackNumber << "\n";
+                    std::cout << "\t"
+                              << "Duration: " << file.duration << "\n";
+                    for (const auto& track : file.tracks)
+                    {
+                        std::cout << "\t"
+                                  << "Track type: " << toUnderlyingType(track.type) << "\n";
+                    }
+                }
+            }
+        });
         _taskScheduler->AddTaskSetToPipe(_currentTask.get());
 
         return true;
+    }
+
+    void readMediaInfo(libvlc_media_t* const media, Media& outInfo) const
+    {
+        libvlc_media_track_t** tracksInfo;
+        outInfo.duration = libvlc_media_get_duration(media);
+
+        auto numTracks = libvlc_media_tracks_get(media, &tracksInfo);
+        for (auto i = 0u; i < numTracks; ++i)
+        {
+            Track trackInfo;
+            readTrackInfo(tracksInfo[i], trackInfo);
+            outInfo.tracks.emplace_back(trackInfo);
+        }
+        libvlc_media_tracks_release(tracksInfo, numTracks);
+    }
+
+    void readMediaMeta(libvlc_media_t* const media, Meta& outMeta) const
+    {
+        assert(media);
+        outMeta.author      = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_Artist));
+        outMeta.name        = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_Title));
+        outMeta.rating      = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_Rating));
+        outMeta.artworkUrl  = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_ArtworkURL));
+        outMeta.publisher   = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_Publisher));
+        outMeta.trackNumber = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_TrackNumber));
+        outMeta.description = ValueOrEmpty(libvlc_media_get_meta(media, libvlc_meta_Description));
+    }
+
+    void readTrackInfo(libvlc_media_track_t* track, Track& trackInfo) const
+    {
+        assert(track);
+        trackInfo.type = FromVLCTrackType(track->i_type);
+    }
+
+    void clearDb() { }
+
+    void setDefaultSettings()
+    {
+        // removeFrom database
+        sqlite3pp::command cmd(_libraryDb, "drop table settings");
+        if (SQLITE_OK != cmd.execute())
+        {
+            std::cout << "Failed to drop settings table" << std::endl;
+        }
+    }
+
+    bool writeBookToDb(const Book& bookInfo)
+    {
+        // start transaction
+        sqlite3pp::transaction tr(_libraryDb);
+        // use lambda to be able to break out early if anything goes wrong
+        bool success = [&]() -> bool {
+            sqlite3pp::command cmd(
+                _libraryDb,
+                "insert into books (duration, author, name, series, description, path, thumbnail_path) values (?, ?, ?, ?, ?, ?, ?)");
+            cmd.binder() << int64_t(bookInfo.duration) << bookInfo.author << bookInfo.name << bookInfo.series
+                         << bookInfo.description << bookInfo.folder << bookInfo.thumbnailLocation;
+            if (SQLITE_OK != cmd.execute())
+            {
+                return false;
+            }
+
+            int64_t bookId = _libraryDb.last_insert_rowid();
+
+            for (const auto& media : bookInfo.files)
+            {
+                sqlite3pp::command cmd(
+                    _libraryDb, "insert into files (book_id, last_modified, track_number, path) values (?, ?, ?, ?)");
+                cmd.binder() << bookId << media.lastModified << (media.meta.trackNumber.empty() ? 0 : std::stoi(media.meta.trackNumber)) << media.path;
+                if (SQLITE_OK != cmd.execute())
+                {
+                    return false;
+                }
+            }
+            return true;
+        }();  // notice the lambda being called
+        if (success)
+        {
+            tr.commit();
+        }
+        else
+        {
+            tr.rollback();
+        }
+        return success;
     }
 
 };  // struct Library
@@ -164,7 +452,7 @@ struct AudiobookPlayerImpl
         {
             return false;
         }
-        if (!_library.init())
+        if (!_library.init(_vlcInstance))
         {
             return false;
         }
