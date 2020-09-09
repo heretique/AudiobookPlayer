@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "imFileBroser.h"
 #include "imSpinner.h"
+#include "StateMachine.h"
 #include <cassert>
 #include <filesystem>
 #include <iostream>
@@ -23,11 +24,11 @@ enum class PlayerState
     Player,
 };
 
-
-static const std::string kLibraryDb = "library.db";
-static const std::string kInitialized = "Initialized...";
+static const std::string kLibraryDb             = "library.db";
+static const std::string kInitialized           = "Initialized...";
 static const std::string kChooseLibraryLocation = "Choose Library Location";
-static const std::string kCreateBooksTable = "create table if not exists books (key integer unique primary key, author text, name text, series text, duration integer)";
+static const std::string kCreateBooksTable =
+    "create table if not exists books (key integer unique primary key, author text, name text, series text, duration integer)";
 
 struct BookInfo
 {
@@ -53,22 +54,27 @@ ImVec2 operator-(const ImVec2& lhs, float s)
 
 struct Library
 {
-    sqlite3pp::database _libraryDb;
+    sqlite3pp::database                  _libraryDb;
     std::unique_ptr<enki::TaskScheduler> _taskScheduler;
-    std::unique_ptr<enki::TaskSet> _currentTask;
-
+    std::unique_ptr<enki::TaskSet>       _currentTask;
 
     Library()
         : _taskScheduler(std::make_unique<enki::TaskScheduler>())
-    {}
+    {
+    }
 
-    ~Library() {
+    ~Library()
+    {
         _taskScheduler->WaitforAllAndShutdown();
         _libraryDb.disconnect();
     }
 
-    bool isEmpty() { return true; }
-    bool init() {
+    bool isEmpty()
+    {
+        return true;
+    }
+    bool init()
+    {
         _taskScheduler->Initialize();
 
         // Initialize database
@@ -76,7 +82,7 @@ struct Library
         fs::path dbPath = fs::current_path();
         dbPath.append(kLibraryDb);
         int result = _libraryDb.connect(dbPath.string().c_str(), SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
-        if (SQLITE_OK != result )
+        if (SQLITE_OK != result)
         {
             return false;
         }
@@ -92,38 +98,55 @@ struct Library
 
     bool startLibraryDiscovery(const std::string& pathName)
     {
-        _currentTask = std::make_unique<enki::TaskSet>([pathName, this](enki::TaskSetPartition range, uint32_t threadnum) {
-            fs::path path(pathName);
-            if (!fs::exists(path) || !fs::is_directory(path))
-            {
-                return;
-            }
-            fs::recursive_directory_iterator rdi(path);
+        _currentTask =
+            std::make_unique<enki::TaskSet>([pathName, this](enki::TaskSetPartition range, uint32_t threadnum) {
+                fs::path path(pathName);
+                if (!fs::exists(path) || !fs::is_directory(path))
+                {
+                    return;
+                }
+                fs::recursive_directory_iterator rdi(path);
 
-            for (const auto& entry : rdi)
-            {
-                std::cout << entry.path() << '\n';
-            }
-        });
+                for (const auto& entry : rdi)
+                {
+                    std::cout << entry.path() << '\n';
+                }
+            });
         _taskScheduler->AddTaskSetToPipe(_currentTask.get());
 
         return true;
-
     }
 
-}; // struct Library
+};  // struct Library
 
 struct AudiobookPlayerImpl
 {
-    libvlc_instance_t*                   _vlcInstance {nullptr};
-    libvlc_media_player_t*               _mediaPlayer {nullptr};
-    libvlc_media_t*                      _currentMedia {nullptr};
-    PlayerState                          _state {PlayerState::Initialized};
-    Library _library;
-    std::string _status;
+    using SM = StateMachine<PlayerState>;
+
+    libvlc_instance_t*     _vlcInstance {nullptr};
+    libvlc_media_player_t* _mediaPlayer {nullptr};
+    libvlc_media_t*        _currentMedia {nullptr};
+    SM                     _stateMachine;
+    Library                _library;
+    std::string            _status;
 
     AudiobookPlayerImpl::AudiobookPlayerImpl()
+        : _stateMachine(
+              PlayerState::Initialized,
+              []() { return SM::ResultType(); },
+              [this]() { return this->onUpdateInitialized(); },
+              []() { return SM::ResultType(); })
     {
+        _stateMachine.addState(
+            PlayerState::Empty,
+            [this]() { return this->onEnterEmpty(); },
+            [this]() { return this->onUpdateEmpty(); },
+            []() {});
+        _stateMachine.addState(
+            PlayerState::LibraryDiscovery,
+            [this]() { return this->onEnterLibraryDiscovery(); },
+            [this]() { return this->onUpdateLibraryDiscovery(); },
+            []() {});
     }
 
     AudiobookPlayerImpl::~AudiobookPlayerImpl()
@@ -168,106 +191,9 @@ struct AudiobookPlayerImpl
         return true;
     }
 
-    void changeState(PlayerState state)
-    {
-        switch (_state)
-        {
-            case PlayerState::Initialized:
-                onExitInitialized();
-                break;
-            case PlayerState::Empty:
-                onExitEmpty();
-                break;
-            case PlayerState::LibraryDiscovery:
-                onExitLibraryDiscovery();
-                break;
-            case PlayerState::LibraryParsing:
-                onEnterLibraryParsing();
-                break;
-            case PlayerState::Settings:
-                onExitSettings();
-                break;
-            case PlayerState::Library:
-                onExitLibrary();
-                break;
-            case PlayerState::BookInfo:
-                onExitBookInfo();
-                break;
-            case PlayerState::Player:
-                onExitPlayer();
-                break;
-            default:
-                assert(false && "this should not be reached, make sure you handle all cases!");
-                break;
-        }
-
-        _state = state;
-
-        switch (_state)
-        {
-            case PlayerState::Initialized:
-                onEnterInitialized();
-                break;
-            case PlayerState::Empty:
-                onEnterEmpty();
-                break;
-            case PlayerState::LibraryDiscovery:
-                onEnterLibraryDiscovery();
-                break;
-            case PlayerState::LibraryParsing:
-                onEnterLibraryParsing();
-                break;
-            case PlayerState::Settings:
-                onEnterSettings();
-                break;
-            case PlayerState::Library:
-                onEnterLibrary();
-                break;
-            case PlayerState::BookInfo:
-                onEnterBookInfo();
-                break;
-            case PlayerState::Player:
-                onEnterPlayer();
-                break;
-            default:
-                assert(false && "this should not be reached, make sure you handle all cases!");
-                break;
-        }
-    }
-
     void update()
     {
-        switch (_state)
-        {
-            case PlayerState::Initialized:
-                onUpdateInitialized();
-                break;
-            case PlayerState::Empty:
-                onUpdateEmpty();
-                break;
-            case PlayerState::LibraryDiscovery:
-                onUpdateLibraryDiscovery();
-                break;
-            case PlayerState::LibraryParsing:
-                onUpdateLibraryParsing();
-                break;
-            case PlayerState::Settings:
-                onUpdateSettings();
-                break;
-            case PlayerState::Library:
-                onUpdateLibrary();
-                break;
-            case PlayerState::BookInfo:
-                onUpdateBookInfo();
-                break;
-            case PlayerState::Player:
-                onUpdatePlayer();
-                break;
-            default:
-                assert(false && "this should not be reached, make sure you handle all cases!");
-                break;
-        }
-
+        _stateMachine.tick();
         drawStatus();
     }
 
@@ -280,25 +206,26 @@ struct AudiobookPlayerImpl
     }
 
     // PlayerState::Initialized
-    void onEnterInitialized() { }
-    void onUpdateInitialized() {
+    SM::ResultType onUpdateInitialized()
+    {
         if (_library.isEmpty())
         {
-            changeState(PlayerState::Empty);
-            return;
+            return PlayerState::Empty;
         }
         else
         {
-
         }
+        return {};
     }
-    void onExitInitialized() { }
 
     // PlayerState::Empty
-    void onEnterEmpty() { }
-    void onUpdateEmpty()
+    SM::ResultType onEnterEmpty()
     {
-        static bool showDialog = false;
+        return {};
+    }
+    SM::ResultType onUpdateEmpty()
+    {
+        static bool        showDialog = false;
         static std::string location;
 
         if (ImGui::Button("Choose library location"))
@@ -306,25 +233,32 @@ struct AudiobookPlayerImpl
             showDialog = true;
         }
 
-        if (showDialog && ImGui::FileBrowser(kChooseLibraryLocation, location, showDialog, ImGuiFileBrowserFlags_SelectDirectory))
+        if (showDialog &&
+            ImGui::FileBrowser(kChooseLibraryLocation, location, showDialog, ImGuiFileBrowserFlags_SelectDirectory))
         {
             if (_library.startLibraryDiscovery(location))
             {
-                changeState(PlayerState::LibraryDiscovery);
+                return PlayerState::LibraryDiscovery;
             }
         }
+
+        return {};
     }
-    void onExitEmpty() { }
 
     // PlayerState::LibraryDiscovery
-    void onEnterLibraryDiscovery() {
+    SM::ResultType onEnterLibraryDiscovery()
+    {
         _status = "Searching books...";
+        return {};
     }
-    void onUpdateLibraryDiscovery() {
+    SM::ResultType onUpdateLibraryDiscovery()
+    {
         ImGui::SetCursorPos((ImGui::GetWindowSize() - 200.f) / 2.0f);
-        ImGui::SpinnerCircle("Library Discovery...", 100.f, 
-            ImGui::ColorConvertU32ToFloat4(ImGui::GetColorU32(ImGuiCol_ButtonHovered)), 
-            ImGui::ColorConvertU32ToFloat4(ImGui::GetColorU32(ImGuiCol_FrameBg)), 16, 2.0f);
+        ImGui::SpinnerCircle("Library Discovery...", 100.f,
+                             ImGui::ColorConvertU32ToFloat4(ImGui::GetColorU32(ImGuiCol_ButtonHovered)),
+                             ImGui::ColorConvertU32ToFloat4(ImGui::GetColorU32(ImGuiCol_FrameBg)), 16, 2.0f);
+
+        return {};
     }
     void onExitLibraryDiscovery() { }
 
@@ -370,4 +304,3 @@ bool AudiobookPlayer::init(int argc, const char* const* argv)
 {
     return _impl->init(argc, argv);
 }
-
