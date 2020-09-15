@@ -6,12 +6,20 @@
 #include "imFileBroser.h"
 #include "imSpinner.h"
 #include "StateMachine.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#include "uri.h"
+#include "Hq/StringHash.h"
+#include <glad/glad.h>
 #include <cassert>
 #include <filesystem>
 #include <iostream>
 #include <unordered_set>
+#include <fstream>
+#include <sstream>
 
 namespace fs = std::filesystem;
+namespace ui = ImGui;
 
 // ENUMS
 
@@ -60,6 +68,12 @@ static const std::unordered_set<std::string> kIgnoreExtensions = {
     ".nfo", ".txt", ".pdf", ".epub", ".mobi", ".log", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".tga"};
 static const std::unordered_set<std::string> kPlaylistExtensions = {".m3u"};
 
+// Fonts
+
+static hq::StringHash kFontTitle       = "titleF"_sh;
+static hq::StringHash kFontNormal      = "normalF"_sh;
+static hq::StringHash kFontDescription = "descriptionF"_sh;
+
 // UTILITIES
 
 template <typename E>
@@ -76,6 +90,16 @@ ImVec2 operator/(const ImVec2& lhs, float s)
 ImVec2 operator-(const ImVec2& lhs, float s)
 {
     return ImVec2(lhs.x - s, lhs.y - s);
+}
+
+ImVec2 operator+(const ImVec2& lhs, const ImVec2& rhs)
+{
+    return ImVec2(lhs.x + rhs.x, lhs.y + rhs.y);
+}
+
+ImVec2 operator-(const ImVec2& lhs, const ImVec2& rhs)
+{
+    return ImVec2(lhs.x - rhs.x, lhs.y - rhs.y);
 }
 
 const char* ValueOrEmpty(const char* s)
@@ -101,7 +125,53 @@ TrackType FromVLCTrackType(libvlc_track_type_t type)
     return trackType;
 }
 
+ImVec2 scaleToFit(float imageAspectRatio, const ImVec2& availabeSpace)
+{
+    ImVec2 scaledSize;
+    float  aspectRatio = availabeSpace.x / availabeSpace.y;
+    if (aspectRatio > imageAspectRatio)
+    {
+        scaledSize.y = availabeSpace.y;
+        scaledSize.x = availabeSpace.x * (imageAspectRatio / aspectRatio);
+    }
+    else
+    {
+        scaledSize.x = availabeSpace.x;
+        scaledSize.y = availabeSpace.y / (imageAspectRatio / aspectRatio);
+    }
+
+    return scaledSize;
+}
+
+const char HEX2DEC[256] = {
+    /*       0  1  2  3   4  5  6  7   8  9  A  B   C  D  E  F */
+    /* 0 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 1 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 2 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 3 */ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  -1, -1, -1, -1, -1, -1,
+
+    /* 4 */ -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 5 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 6 */ -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 7 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+
+    /* 8 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* 9 */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* A */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* B */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+
+    /* C */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* D */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* E */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    /* F */ -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+
 // STRUCTS & CLASSES
+
+struct Texture
+{
+    unsigned int handle {0};
+    float        aspectRatio {1};
+};
 
 struct Track
 {
@@ -151,16 +221,23 @@ struct Book
     uint64_t           duration {0};
     std::string        thumbnailLocation;
     std::vector<Media> files;
+    Texture            thumbnail;
 };
 
 struct Library
 {
+    enum class State {
+        Idle,
+        Working
+    };
+
+    State                                _state {State::Idle};
     sqlite3pp::database                  _libraryDb;
     std::unique_ptr<enki::TaskScheduler> _taskScheduler;
     std::unique_ptr<enki::TaskSet>       _currentTask;
     libvlc_instance_t*                   _vlcInstance {nullptr};  // shared VLC instance with the player
     std::vector<Book>                    _books;
-    std::unique_ptr<Book>                _currentBook;
+    Texture                              _genericCover;
 
     Library()
         : _taskScheduler(std::make_unique<enki::TaskScheduler>())
@@ -213,6 +290,14 @@ struct Library
         {
             return false;
         }
+
+        _genericCover = loadImage("generic_cover.png");
+        if (!_genericCover.handle)
+        {
+            return false;
+        }
+
+        readLibraryFromDb();
 
         return true;
     }
@@ -285,36 +370,20 @@ struct Library
                     libvlc_media_release(media);
                 }
             }
-            std::cout << "Found books:\n";
-            for (const auto& book : _books)
+
+            for (auto& book : _books)
             {
-                writeBookToDb(book);
-                std::cout << book.name << "\n";
-                for (const auto& file : book.files)
+                // make sure not empty
+                if (book.files.size())
                 {
-                    std::cout << "\t"
-                              << "File: " << file.path << "\n";
-                    std::cout << "\t"
-                              << "Author: " << file.meta.author << "\n";
-                    std::cout << "\t"
-                              << "Name: " << file.meta.name << "\n";
-                    std::cout << "\t"
-                              << "Is playlist: " << file.isPlaylist << "\n";
-                    std::cout << "\t"
-                              << "Description: " << file.meta.description << "\n";
-                    std::cout << "\t"
-                              << "Track number: " << file.meta.trackNumber << "\n";
-                    std::cout << "\t"
-                              << "Duration: " << file.duration << "\n";
-                    for (const auto& track : file.tracks)
-                    {
-                        std::cout << "\t"
-                                  << "Track type: " << toUnderlyingType(track.type) << "\n";
-                    }
+                    resolveBookInfo(book);
+                    writeBookToDb(book);
                 }
             }
+            _state = State::Idle;
         });
         _taskScheduler->AddTaskSetToPipe(_currentTask.get());
+        _state = State::Working;
 
         return true;
     }
@@ -352,6 +421,162 @@ struct Library
         trackInfo.type = FromVLCTrackType(track->i_type);
     }
 
+    void resolveBookInfo(Book& book)
+    {
+
+        if (!book.name.empty() && book.files.size() > 1)
+        {
+            if (book.files[0].meta.name == book.files[1].meta.name)
+            {
+                book.name = book.files[0].meta.name;
+            }
+        }
+
+        // try get the name from meta info
+        if (book.name.empty())
+        {
+            for (const auto& file : book.files)
+            {
+                if (!file.meta.name.empty())
+                {
+                    book.name = file.meta.name;
+                    break;
+                }
+            }
+        }
+
+        // try get author from meta
+        if (book.author.empty())
+        {
+            for (const auto& file : book.files)
+            {
+                if (!file.meta.author.empty())
+                {
+                    book.author = file.meta.author;
+                    break;
+                }
+            }
+        }
+
+        // if not found in meta, get name from folder name
+        if (book.name.empty())
+        {
+            fs::path bookFolder(book.folder);
+            book.name = bookFolder.filename().string();
+        }
+
+        // try retrieving artwork from meta
+        if (book.thumbnailLocation.empty())
+        {
+            for (const auto& file : book.files)
+            {
+                if (!file.meta.artworkUrl.empty())
+                {
+                    book.thumbnailLocation = file.meta.artworkUrl;
+                    break;
+                }
+            }
+        }
+
+        // if not found in meta info try looking for an image inside folder
+        if (book.thumbnailLocation.empty())
+        {
+        }
+
+        for (const auto& file : book.files)
+        {
+            book.duration += file.duration;
+        }
+    }
+
+    // https://stackoverflow.com/questions/18307429/encode-decode-url-in-c/35348028
+    // https://www.codeguru.com/cpp/cpp/algorithms/strings/article.php/c12759/URI-Encoding-and-Decoding.htm
+    std::string UriDecode(const std::string& sSrc)
+    {
+        // Note from RFC1630: "Sequences which start with a percent
+        // sign but are not followed by two hexadecimal characters
+        // (0-9, A-F) are reserved for future extension"
+
+        const unsigned char*       pSrc    = (const unsigned char*)sSrc.c_str();
+        const int                  SRC_LEN = sSrc.length();
+        const unsigned char* const SRC_END = pSrc + SRC_LEN;
+        // last decodable '%'
+        const unsigned char* const SRC_LAST_DEC = SRC_END - 2;
+
+        char* const pStart = new char[SRC_LEN];
+        char*       pEnd   = pStart;
+
+        while (pSrc < SRC_LAST_DEC)
+        {
+            if (*pSrc == '%')
+            {
+                char dec1, dec2;
+                if (-1 != (dec1 = HEX2DEC[*(pSrc + 1)]) && -1 != (dec2 = HEX2DEC[*(pSrc + 2)]))
+                {
+                    *pEnd++ = (dec1 << 4) + dec2;
+                    pSrc += 3;
+                    continue;
+                }
+            }
+
+            *pEnd++ = *pSrc++;
+        }
+
+        // the last 2- chars
+        while (pSrc < SRC_END)
+            *pEnd++ = *pSrc++;
+
+        std::string sResult(pStart, pEnd);
+        delete[] pStart;
+        return sResult;
+    }
+
+    Texture loadImage(const std::string& filename)
+    {
+        Texture     texture;
+        std::string path;
+        if (filename.find("file:///") != std::string::npos)
+        {
+            uri fileUri(filename);
+            path = UriDecode(fileUri.get_path());
+        }
+        else
+        {
+            path = filename;
+        }
+
+        int width, height, channels;
+
+        unsigned char* imageData = stbi_load(path.c_str(), &width, &height, &channels, 0);
+
+        if (imageData)
+        {
+            glGenTextures(1, &texture.handle);
+            glBindTexture(GL_TEXTURE_2D, texture.handle);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            int internalFormat = GL_RGBA;
+            int format = GL_RGBA;
+            int unpackAlignment = 4;
+            if (channels == 3)
+            {
+                internalFormat = GL_RGB;
+                format = GL_RGB;
+                glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackAlignment);
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            }
+            glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, imageData);
+            if (channels == 3)
+            {
+                glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlignment);
+            }
+            stbi_image_free(imageData);
+
+            texture.aspectRatio = float(width) / height;
+        }
+
+        return texture;
+    }
+
     void clearDb() { }
 
     void setDefaultSettings()
@@ -386,7 +611,8 @@ struct Library
             {
                 sqlite3pp::command cmd(
                     _libraryDb, "insert into files (book_id, last_modified, track_number, path) values (?, ?, ?, ?)");
-                cmd.binder() << bookId << media.lastModified << (media.meta.trackNumber.empty() ? 0 : std::stoi(media.meta.trackNumber)) << media.path;
+                cmd.binder() << bookId << media.lastModified
+                             << (media.meta.trackNumber.empty() ? 0 : std::stoi(media.meta.trackNumber)) << media.path;
                 if (SQLITE_OK != cmd.execute())
                 {
                     return false;
@@ -405,18 +631,45 @@ struct Library
         return success;
     }
 
+    void readLibraryFromDb()
+    {
+        _books.clear();
+        sqlite3pp::query query(_libraryDb, "select * from books");
+        for (sqlite3pp::query::iterator i = query.begin(); i != query.end(); ++i)
+        {
+            Book book;
+            std::tie(book.id, book.duration, book.author, book.name, book.series, book.description, book.folder,
+                     book.thumbnailLocation) =
+                (*i).get_columns<long, long long, char const*, char const*, char const*, char const*, char const*,
+                                 char const*>(0, 1, 2, 3, 4, 5, 6, 7);
+            if (!book.thumbnailLocation.empty())
+            {
+                book.thumbnail = loadImage(book.thumbnailLocation);
+            }
+
+            if (!book.thumbnail.handle)
+            {
+                book.thumbnail = _genericCover;
+            }
+
+            _books.emplace_back(book);
+        }
+    }
+
 };  // struct Library
 
 struct AudiobookPlayerImpl
 {
     using SM = StateMachine<PlayerState>;
 
-    libvlc_instance_t*     _vlcInstance {nullptr};
-    libvlc_media_player_t* _mediaPlayer {nullptr};
-    libvlc_media_t*        _currentMedia {nullptr};
-    SM                     _stateMachine;
-    Library                _library;
-    std::string            _status;
+    libvlc_instance_t*                          _vlcInstance {nullptr};
+    libvlc_media_player_t*                      _mediaPlayer {nullptr};
+    libvlc_media_t*                             _currentMedia {nullptr};
+    SM                                          _stateMachine;
+    Library                                     _library;
+    std::unique_ptr<Book>                       _currentBook;
+    std::string                                 _status;
+    std::unordered_map<hq::StringHash, ImFont*> _fonts;
 
     AudiobookPlayerImpl::AudiobookPlayerImpl()
         : _stateMachine(
@@ -434,6 +687,16 @@ struct AudiobookPlayerImpl
             PlayerState::LibraryDiscovery,
             [this]() { return this->onEnterLibraryDiscovery(); },
             [this]() { return this->onUpdateLibraryDiscovery(); },
+            [this]() { this->onExitLibraryDiscovery(); });
+        _stateMachine.addState(
+            PlayerState::Player,
+            [this]() { return this->onEnterPlayer(); },
+            [this]() { return this->onUpdatePlayer(); },
+            []() {});
+        _stateMachine.addState(
+            PlayerState::Library,
+            [this]() { return this->onEnterLibrary(); },
+            [this]() { return this->onUpdateLibrary(); },
             []() {});
     }
 
@@ -447,6 +710,9 @@ struct AudiobookPlayerImpl
 
     bool init(int argc, const char* const* argv)
     {
+        if (!initFonts())
+            return false;
+
         _vlcInstance = libvlc_new(argc, argv);
         if (_vlcInstance == nullptr)
         {
@@ -458,6 +724,22 @@ struct AudiobookPlayerImpl
         }
 
         _status = kInitialized;
+        return true;
+    }
+
+    bool initFonts()
+    {
+        ImFontAtlas* fontAtlas = ui::GetIO().Fonts;
+        ImFont*      font      = fontAtlas->AddFontFromFileTTF("fonts/Roboto-Medium.ttf", 16.f);
+        if (!font)
+            return false;
+        _fonts.emplace(std::make_pair(kFontNormal, font));
+
+        font = fontAtlas->AddFontFromFileTTF("fonts/Roboto-Medium.ttf", 24.f);
+        if (!font)
+            return false;
+        _fonts.emplace(std::make_pair(kFontTitle, font));
+
         return true;
     }
 
@@ -481,16 +763,23 @@ struct AudiobookPlayerImpl
 
     void update()
     {
+        drawToolbar();
         _stateMachine.tick();
         drawStatus();
     }
 
+    void drawToolbar()
+    {
+        ui::Text("Toolbar here...");
+        ui::Separator();
+    }
+
     void drawStatus()
     {
-        ImGui::SetCursorPosX(0);
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 2 * ImGui::GetFontSize());
-        ImGui::Separator();
-        ImGui::Text(_status.c_str());
+        ui::SetCursorPosX(0);
+        ui::SetCursorPosY(ui::GetWindowHeight() - 2 * ui::GetFontSize());
+        ui::Separator();
+        ui::Text(_status.c_str());
     }
 
     // PlayerState::Initialized
@@ -502,6 +791,14 @@ struct AudiobookPlayerImpl
         }
         else
         {
+            if (_currentBook)
+            {
+                return PlayerState::Player;
+            }
+            else
+            {
+                return PlayerState::Library;
+            }
         }
         return {};
     }
@@ -516,13 +813,13 @@ struct AudiobookPlayerImpl
         static bool        showDialog = false;
         static std::string location;
 
-        if (ImGui::Button("Choose library location"))
+        if (ui::Button("Choose library location"))
         {
             showDialog = true;
         }
 
         if (showDialog &&
-            ImGui::FileBrowser(kChooseLibraryLocation, location, showDialog, ImGuiFileBrowserFlags_SelectDirectory))
+            ui::FileBrowser(kChooseLibraryLocation, location, showDialog, ImGuiFileBrowserFlags_SelectDirectory))
         {
             if (_library.startLibraryDiscovery(location))
             {
@@ -541,14 +838,21 @@ struct AudiobookPlayerImpl
     }
     SM::ResultType onUpdateLibraryDiscovery()
     {
-        ImGui::SetCursorPos((ImGui::GetWindowSize() - 200.f) / 2.0f);
-        ImGui::SpinnerCircle("Library Discovery...", 100.f,
-                             ImGui::ColorConvertU32ToFloat4(ImGui::GetColorU32(ImGuiCol_ButtonHovered)),
-                             ImGui::ColorConvertU32ToFloat4(ImGui::GetColorU32(ImGuiCol_FrameBg)), 16, 2.0f);
+        ui::SetCursorPos((ui::GetWindowSize() - 200.f) / 2.0f);
+        ui::SpinnerCircle("Library Discovery...", 100.f,
+                             ui::ColorConvertU32ToFloat4(ui::GetColorU32(ImGuiCol_ButtonHovered)),
+                             ui::ColorConvertU32ToFloat4(ui::GetColorU32(ImGuiCol_FrameBg)), 16, 2.0f);
+
+        if (_library._state != Library::State::Working)
+        {
+            return PlayerState::Library;
+        }
 
         return {};
     }
-    void onExitLibraryDiscovery() { }
+    void onExitLibraryDiscovery() {
+        _library.readLibraryFromDb();
+    }
 
     // PlayerState::LibraryParsing
     void onEnterLibraryParsing() { }
@@ -561,8 +865,66 @@ struct AudiobookPlayerImpl
     void onExitSettings() { }
 
     // PlayerState::Library
-    void onEnterLibrary() { }
-    void onUpdateLibrary() { }
+    SM::ResultType onEnterLibrary()
+    {
+        return {};
+    }
+    SM::ResultType onUpdateLibrary()
+    {
+        static size_t selectedIndex = 0;
+        float         listBoxHeight = ui::GetWindowHeight() - 2 * ui::GetCursorPosY();
+        float         listBoxWidth  = ui::GetWindowWidth() / 2 - ui::GetStyle().FramePadding.x;
+        if (ui::BeginChild("content"))
+        {
+            ui::Columns(2);
+            if (ui::ListBoxHeader("##", ImVec2(listBoxWidth, listBoxHeight)))
+            {
+                int count = 0;
+                for (const auto& book : _library._books)
+                {
+                    if (ui::Selectable(book.name.c_str(), count == selectedIndex))
+                    {
+                        selectedIndex = count;
+                    }
+                    count++;
+                }
+                ui::ListBoxFooter();
+                if (selectedIndex >= _library._books.size())
+                {
+                    selectedIndex = 0;
+                }
+            }
+            ui::NextColumn();
+            const Book& selectedBook = _library._books[selectedIndex];
+            if (selectedBook.thumbnail.handle)
+            {
+                ImVec2 imageSpace(listBoxWidth, listBoxHeight / 2.f);
+                ImVec2 imageSize = scaleToFit(selectedBook.thumbnail.aspectRatio, imageSpace);
+                ImVec2 cursorPos = ui::GetCursorPos();
+                ui::SetCursorPos(cursorPos + (imageSpace - imageSize) / 2);
+                ui::Image((void*)(intptr_t)selectedBook.thumbnail.handle, imageSize);
+            }
+
+            ui::NewLine();
+
+            ui::PushFont(_fonts[kFontTitle]);
+            ui::SetCursorPosX(ui::GetCursorPosX() +
+                              (listBoxWidth - ui::CalcTextSize(selectedBook.name.c_str()).x) / 2.f);
+            ui::Text(selectedBook.name.c_str());
+            ui::PopFont();
+            ui::SetCursorPosX(ui::GetCursorPosX() +
+                              (listBoxWidth - ui::CalcTextSize(selectedBook.author.c_str()).x) / 2.f);
+            ui::Text(selectedBook.author.c_str());
+            std::stringstream ss;
+            ss << "Duration: " << selectedBook.duration;
+            ui::SetCursorPosX(ui::GetCursorPosX() +
+                              (listBoxWidth - ui::CalcTextSize(ss.str().c_str()).x) / 2.f);
+            ui::Text(ss.str().c_str());
+            ui::EndChild();
+        }
+
+        return {};
+    }
     void onExitLibrary() { }
 
     // PlayerState::BookInfo
@@ -571,8 +933,14 @@ struct AudiobookPlayerImpl
     void onExitBookInfo() { }
 
     // PlayerState::Player
-    void onEnterPlayer() { }
-    void onUpdatePlayer() { }
+    SM::ResultType onEnterPlayer()
+    {
+        return {};
+    }
+    SM::ResultType onUpdatePlayer()
+    {
+        return {};
+    }
     void onExitPlayer() { }
 };
 

@@ -1,0 +1,3 @@
+[submodule "hq"]
+	path = hq
+	url = https://github.com/heretique/hq.git

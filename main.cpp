@@ -62,38 +62,6 @@ static void glfw_error_callback(int error, const char* description)
 
 int main(int, char**)
 {
-    AudiobookPlayer player;
-    const char* const args[] = {
-        "--intf",
-        "dummy",  //
-        "--vout",
-        "dummy",
-        "--no-video",                // we don't want video (output)
-        "--no-video-title-show",     // nor the filename displayed
-        "--no-stats",                // no stats
-        "--no-sub-autodetect-file",  // we don't want subtitles
-        "--no-disable-screensaver",  // we don't want interfaces
-        "--no-snapshot-preview",     // no blending in dummy vout
-        "--no-keyboard-events",      // no keyboard input
-        "--no-mouse-events",         // no mouse input
-#ifndef NDEBUG
-        "--verbose=2",  // full log
-#endif
-    };
-    if (!player.init(sizeof args / sizeof *args, args))
-    {
-        return 1;
-    }
-
-    //    const char* const helpargs[] = {
-    //        "--help",                //
-    //        "--intf",      "dummy",  //
-    //        "--vout",      "dummy",  //
-    //        "--verbose=2",
-    //    };
-
-    //    vlc.init(sizeof helpargs / sizeof *helpargs, helpargs);
-
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -190,8 +158,40 @@ int main(int, char**)
     // io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f,
     // NULL, io.Fonts->GetGlyphRangesJapanese()); IM_ASSERT(font != NULL);
 
-    // Our state
+    // init player
+    AudiobookPlayer   player;
+    const char* const args[] = {
+        "--intf",
+        "dummy",  //
+        "--vout",
+        "dummy",
+        "--no-video",                // we don't want video (output)
+        "--no-video-title-show",     // nor the filename displayed
+        "--no-stats",                // no stats
+        "--no-sub-autodetect-file",  // we don't want subtitles
+        "--no-disable-screensaver",  // we don't want interfaces
+        "--no-snapshot-preview",     // no blending in dummy vout
+        "--no-keyboard-events",      // no keyboard input
+        "--no-mouse-events",         // no mouse input
+#ifndef NDEBUG
+        "--verbose=2",  // full log
+#endif
+    };
+    if (!player.init(sizeof args / sizeof *args, args))
+    {
+        return 1;
+    }
 
+    //    const char* const helpargs[] = {
+    //        "--help",                //
+    //        "--intf",      "dummy",  //
+    //        "--vout",      "dummy",  //
+    //        "--verbose=2",
+    //    };
+
+    //    vlc.init(sizeof helpargs / sizeof *helpargs, helpargs);
+
+    // Our state
     bool   show_demo_window = false;
 
     // Main loop
@@ -229,7 +229,7 @@ int main(int, char**)
                              ImGuiWindowFlags_NoBackground); 
 
             ImGui::Checkbox("Demo Window", &show_demo_window);
-
+            ImGui::SameLine();
             // Player UI builds here along with all logic
             player.update();
 
