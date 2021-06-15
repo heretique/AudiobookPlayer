@@ -1,4 +1,4 @@
-# AudiobookPlayer
+# AudiobookPlayer (Playground project)
 
 Small, audiobook player that uses `dear imgui` for interface and `libVLC`  for media player and metadata extraction.
 
