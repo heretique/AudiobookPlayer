@@ -1,0 +1,16 @@
+{
+    "name": "audiobookplayer",
+    "version-string": "0.0.1",
+    "dependencies": [
+        "glad",
+        "sdl2",
+        "rttr",
+        "entt",
+        "glfw3",
+        "sqlite3",
+        {
+            "name": "imgui",
+            "features": [ "docking-experimental", "opengl3-glad-binding", "glfw-binding" ]
+        }
+    ]
+}

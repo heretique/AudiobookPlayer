@@ -17,11 +17,9 @@ public:
     StateMachine(StateType initialState, TransitionFunctionType&& enterFunc, TransitionFunctionType&& tickFunc,
                  LeaveFunctionType&& leaveFunc)
     {
-        _currentState =
-            &_states
-                 .emplace(std::make_pair(initialState, StateMachineState(initialState, std::move(enterFunc),
-                                                                         std::move(tickFunc), std::move(leaveFunc))))
-                 .first->second;
+        _currentState = initialState;
+        _states.emplace(std::make_pair(initialState, StateMachineState(initialState, std::move(enterFunc),
+                                                                       std::move(tickFunc), std::move(leaveFunc))));
     };
 
     void addState(StateType state, TransitionFunctionType&& enterFunc, TransitionFunctionType&& tickFunc,
@@ -33,12 +31,13 @@ public:
 
     void changeState(StateType state)
     {
-        assert(_currentState);
-        _currentState->leaveFunc();
+        auto currIt = _states.find(_currentState);
+        assert(currIt != _states.end());
+        currIt->second.leaveFunc();
         auto iter = _states.find(state);
         assert(iter != _states.end());
-        _currentState = &iter->second;
-        ResultType transition = _currentState->enterFunc();
+        _currentState         = iter->second.state;
+        ResultType transition = iter->second.enterFunc();
         if (transition)
         {
             changeState(*transition);
@@ -47,8 +46,9 @@ public:
 
     void tick()
     {
-        assert(_currentState);
-        ResultType transition = _currentState->tickFunc();
+        auto currIt = _states.find(_currentState);
+        assert(currIt != _states.end());
+        ResultType transition = currIt->second.tickFunc();
         if (transition)
         {
             changeState(*transition);
@@ -57,8 +57,7 @@ public:
 
     StateType currentState() const
     {
-        assert(_currentState);
-        return _currentState->state;
+        return _currentState;
     }
 
 private:
@@ -79,7 +78,7 @@ private:
         LeaveFunctionType      leaveFunc;
     };
 
-    StateMachineState*                               _currentState;
+    StateType                                        _currentState;
     std::unordered_map<StateType, StateMachineState> _states;
 };
 
@@ -98,11 +97,9 @@ public:
                             TransitionFunctionType&& tickFunc, LeaveFunctionType&& leaveFunc)
         : _context(context)
     {
-        _currentState =
-            &_states
-                 .emplace(std::make_pair(initialState, StateMachineState(initialState, std::move(enterFunc),
-                                                                         std::move(tickFunc), std::move(leaveFunc))))
-                 .first->second;
+        _currentState = initialState;
+        _states.emplace(std::make_pair(initialState, StateMachineState(initialState, std::move(enterFunc),
+                                                                       std::move(tickFunc), std::move(leaveFunc))));
     };
 
     void addState(StateType state, TransitionFunctionType&& enterFunc, TransitionFunctionType&& tickFunc,
@@ -114,12 +111,13 @@ public:
 
     void changeState(StateType state)
     {
-        assert(_currentState);
-        _currentState->leaveFunc(_context);
+        auto currIt = _states.find(_currentState);
+        assert(currIt != _states.end());
+        currIt->second.leaveFunc(_context);
         auto iter = _states.find(state);
         assert(iter != _states.end());
-        _currentState         = &iter->second;
-        ResultType transition = _currentState->enterFunc(_context);
+        _currentState         = iter->second.state;
+        ResultType transition = currIt->second.enterFunc(_context);
         if (transition)
         {
             changeState(*transition);
@@ -128,8 +126,9 @@ public:
 
     void tick()
     {
-        assert(_currentState);
-        ResultType transition = _currentState->tickFunc(_context);
+        auto currIt = _states.find(_currentState);
+        assert(currIt != _states.end());
+        ResultType transition = currIt->second.tickFunc(_context);
         if (transition)
         {
             changeState(*transition);
@@ -138,8 +137,7 @@ public:
 
     StateType currentState() const
     {
-        assert(_currentState);
-        return _currentState->state;
+        return _currentState;
     }
 
 private:
@@ -161,6 +159,6 @@ private:
     };
 
     ContextType&                                     _context;
-    StateMachineState*                               _currentState;
+    StateType                                        _currentState;
     std::unordered_map<StateType, StateMachineState> _states;
 };

@@ -61,11 +61,11 @@ add_custom_command(TARGET AudiobookPlayer POST_BUILD
     ${CMAKE_CURRENT_SOURCE_DIR}/generic_cover.png
     $<TARGET_FILE_DIR:AudiobookPlayer>
 
- #   COMMAND ${CMAKE_COMMAND} -E copy_directory
- #   ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/vlc/plugins
- #   $<TARGET_FILE_DIR:AudiobookPlayer>/plugins
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/vlc/plugins
+    $<TARGET_FILE_DIR:AudiobookPlayer>/plugins
 
- #   COMMAND ${CMAKE_COMMAND} -E copy_directory
- #   ${CMAKE_CURRENT_SOURCE_DIR}/fonts
- #   $<TARGET_FILE_DIR:AudiobookPlayer>/fonts
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/fonts
+    $<TARGET_FILE_DIR:AudiobookPlayer>/fonts
     )

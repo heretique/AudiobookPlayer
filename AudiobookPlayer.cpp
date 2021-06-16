@@ -882,7 +882,7 @@ struct AudiobookPlayerImpl
                 int count = 0;
                 for (const auto& book : _library._books)
                 {
-                    if (ui::Selectable(book.name.c_str(), count == selectedIndex))
+                    if (ui::Selectable(book.name.c_str(), count == selectedIndex, ImGuiSelectableFlags_AllowDoubleClick))
                     {
                         selectedIndex = count;
                     }
